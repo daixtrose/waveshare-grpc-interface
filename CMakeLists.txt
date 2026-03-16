@@ -24,6 +24,11 @@ if(NOT gRPC_FOUND)
     )
     set(gRPC_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(gRPC_BUILD_CSHARP_EXT OFF CACHE BOOL "" FORCE)
+    # Disable install targets — protobuf's install(EXPORT) references abseil
+    # targets that aren't in any export set when built as a FetchContent subproject
+    set(gRPC_INSTALL OFF CACHE BOOL "" FORCE)
+    set(protobuf_INSTALL OFF CACHE BOOL "" FORCE)
+    set(utf8_range_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(grpc_proj)
 
     # When built from source, the plugin targets have different names
