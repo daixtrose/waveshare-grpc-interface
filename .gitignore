@@ -1,0 +1,15 @@
+build/
+build-*/
+CMakeUserPresets.json
+.vscode/
+.cache/
+.gradle/
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+*.class
+*.jar
