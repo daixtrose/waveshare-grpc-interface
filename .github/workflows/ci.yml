@@ -42,7 +42,7 @@ jobs:
       - name: Configure
         env:
           CXX: g++-14
-        run: cmake -B build -DCMAKE_CXX_STANDARD=23
+        run: cmake -B build -DCMAKE_CXX_STANDARD=23 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 
       - name: Build
         run: cmake --build build --parallel
