@@ -33,6 +33,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y g++-14 pkg-config make
 
+      - name: Cache FetchContent dependencies
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: fetchcontent-cpp-${{ runner.os }}-x86_64-${{ hashFiles('CMakeLists.txt') }}
+
       - name: Configure
         env:
           CXX: g++-14
