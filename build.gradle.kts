@@ -1,6 +1,6 @@
 plugins {
     id("java-library")
-    id("com.google.protobuf") version "0.9.4"
+    id("com.google.protobuf") version "0.9.6"
 }
 
 group = "com.waveshare"
@@ -17,8 +17,8 @@ repositories {
     mavenCentral()
 }
 
-val grpcVersion = "1.72.0"
-val protocVersion = "28.3"
+val grpcVersion = "1.79.0"
+val protocVersion = "3.25.8"
 val reactorGrpcVersion = "1.2.4"
 
 dependencies {
@@ -28,6 +28,7 @@ dependencies {
 
     // reactor-grpc stub generation
     api("com.salesforce.servicelibs:reactor-grpc-stub:$reactorGrpcVersion")
+    api("io.projectreactor:reactor-core:3.8.4")
 
     // Required for Java 9+ (javax.annotation)
     compileOnly("org.apache.tomcat:annotations-api:6.0.53")
