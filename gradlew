@@ -96,7 +96,7 @@ APP_BASE_NAME=${0##*/}
 APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '%s\n' "$PWD" ) || exit
 
 # Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
-DEFAULT_JVM_OPTS='"-Xmx64m" "-Xms64m"'
+DEFAULT_JVM_OPTS='"--enable-native-access=ALL-UNNAMED" "-Xmx64m" "-Xms64m"'
 
 WRAPPER_JAR="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
 
