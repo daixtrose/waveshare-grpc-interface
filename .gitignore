@@ -13,3 +13,4 @@ CMakeUserPresets.json
 *.exe
 *.class
 *.jar
+!gradle/wrapper/gradle-wrapper.jar
