@@ -352,6 +352,7 @@ message RelayEvent {
     COIL_OFF       = 2;
     CYCLE_COMPLETE = 3;
     SAFE_SHUTDOWN  = 4;
+    INTERRUPTED    = 5;
   }
   EventType type    = 1;
   uint32    coil_nr = 2;  // 1-8, meaningful for COIL_ON / COIL_OFF
