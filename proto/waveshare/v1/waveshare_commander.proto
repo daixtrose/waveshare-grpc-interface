@@ -1,24 +1,32 @@
 // waveshare_commander.proto
 //
 // Bidirectional-streaming gRPC service for the Waveshare Modbus Commander.
-// Maps 1 : 1 to the CLI commands defined in cli_parser.hpp / cli_parser.cpp.
 //
 // Transport: HTTP/2 with mutual TLS 1.3 (server + client certificates).
+//
+// Message envelope follows the ReactiveX Observable contract
+// (https://reactivex.io/documentation/contract.html):
+//
+//   - Each request_id represents a logical observable.
+//   - Per request_id: zero or more Next, then exactly one terminal
+//     Completed or Error.
+//   - Client and Server envelopes are symmetric.
 //
 // Usage pattern:
 //   1. Client opens the bidi stream  Session(stream ClientMessage)
 //      returns (stream ServerMessage).
-//   2. Client sends a Connect request to establish the Modbus TCP link
-//      (equivalent to  -i / -p / -t  CLI flags).
-//   3. Client sends command messages; each carries a  request_id  chosen
-//      by the client so that responses can be correlated (replies are
-//      asynchronous — the server may interleave responses from different
-//      requests).
-//   4. For long-running / streaming operations (ITERATE_RELAY_SWITCHES,
-//      SCAN_NETWORK, MONITOR_DIGITAL_INPUTS) the server sends multiple
-//      ServerMessages with the same request_id.  The client sends a
-//      CancelRequest to stop them.
-//   5. Either side can close the stream at any time.
+//   2. Client sends a ClientNext(ConnectRequest) to establish the
+//      Modbus TCP link.  Server replies with ServerNext(ConnectResponse)
+//      then ServerCompleted for that request_id.
+//   3. Client sends command messages as ClientNext; each carries a
+//      request_id chosen by the client so that responses can be
+//      correlated (replies are asynchronous — the server may interleave
+//      responses from different requests).
+//   4. For streaming operations (ITERATE_RELAY_SWITCHES, SCAN_NETWORK,
+//      MONITOR_DIGITAL_INPUTS) the server sends multiple ServerNext
+//      messages with the same request_id.  The client sends
+//      ClientCompleted to dispose the subscription (= cancel).
+//   5. Either side can close the gRPC stream at any time.
 //   6. Optionally, the client opens a DebugChannel stream for
 //      asynchronous debug/log output with runtime control.
 
@@ -40,15 +48,47 @@ service WaveshareCommander {
 
   // Asynchronous debug/log channel.  Client can subscribe and
   // dynamically control log levels and filters at runtime.
-  // Correlated with a Session via session_id in DebugControl.
-  rpc DebugChannel(stream DebugControl) returns (stream DebugMessage);
+  // Correlated with a Session via session_id.
+  // Same Rx envelope pattern as Session: Next / Completed / Error.
+  rpc DebugChannel(stream DebugClientMessage) returns (stream DebugServerMessage);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Envelope messages
+// Layer 1: Rx transport envelope (domain-agnostic)
+//
+// Maps 1:1 to the ReactiveX Observable contract per request_id:
+//   onNext(T)     → ServerNext / ClientNext
+//   onCompleted() → ServerCompleted / ClientCompleted
+//   onError(E)    → ServerError / ClientError
 // ═══════════════════════════════════════════════════════════════════
 
+// ── Client → Server ─────────────────────────────────────────────
+
 message ClientMessage {
+  oneof kind {
+    ClientNext      next      = 1;
+    ClientCompleted completed = 2;
+    ClientError     error     = 3;
+  }
+}
+
+// ── Server → Client ─────────────────────────────────────────────
+
+message ServerMessage {
+  oneof kind {
+    ServerNext      next      = 1;
+    ServerCompleted completed = 2;
+    ServerError     error     = 3;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Layer 2: Domain payload (inside Next / Error messages)
+// ═══════════════════════════════════════════════════════════════════
+
+// ── ClientNext: carries a domain command ────────────────────────
+
+message ClientNext {
   // Caller-chosen correlation id (echoed in every ServerMessage that
   // belongs to this request).  Must be unique per in-flight request.
   string request_id = 1;
@@ -85,21 +125,29 @@ message ClientMessage {
     SetModbusTcpRequest       set_modbus_tcp        = 72;
     SetModbusTcpPortRequest   set_modbus_tcp_port   = 73;
     SetNameRequest            set_name              = 74;
-
-    // ── Flow control ────────────────────────────────────────────
-    CancelRequest             cancel                = 90;
   }
 }
 
-message ServerMessage {
-  // Echoed from the ClientMessage that triggered this response.
-  string request_id = 1;
+// ── ClientCompleted: dispose a subscription (= cancel) ──────────
+// Replaces CancelRequest.  Signals that the client is no longer
+// interested in receiving responses for this request_id.
 
-  // True when this is the final message for the given request_id.
-  // For one-shot commands this is always true.
-  // For streaming commands (iterate, scan, monitor) it is true only
-  // on the last message (completion or cancellation acknowledgement).
-  bool final = 2;
+message ClientCompleted {
+  string request_id = 1;
+}
+
+// ── ClientError: client-side error for a request ────────────────
+
+message ClientError {
+  string request_id = 1;
+  string message    = 2;
+}
+
+// ── ServerNext: carries a domain response ───────────────────────
+
+message ServerNext {
+  // Echoed from the ClientNext that triggered this response.
+  string request_id = 1;
 
   oneof response {
     // ── Connection management ────────────────────────────────────
@@ -129,55 +177,78 @@ message ServerMessage {
     ConfigResult               config_result         = 70;
     DeviceReappeared           device_reappeared     = 71;
 
-    // ── Flow control ────────────────────────────────────────────
+    // ── Cancellation acknowledgement ────────────────────────────
     CancelAck                  cancel_ack            = 90;
-
-    // ── Error (may arrive for any request_id) ───────────────────
-    ErrorResponse              error                 = 99;
   }
 }
 
+// ── ServerCompleted: stream done for a request_id ───────────────
+// Pure onCompleted() — no payload beyond correlation.
+
+message ServerCompleted {
+  string request_id = 1;
+}
+
+// ── ServerError: terminal error for a request_id ────────────────
+
+message ServerError {
+  string request_id = 1;
+  ErrorResponse error = 2;
+}
+
 // ═══════════════════════════════════════════════════════════════════
-// Debug channel     (D2: bidi debug stream with runtime control)
+// Debug channel — Rx envelope (same pattern as Session)
+//
+// The debug channel is a separate bidi stream correlated with a
+// Session via session_id.  It follows the same Rx contract:
+//   onNext(T)     → DebugClientNext / DebugServerNext
+//   onCompleted() → DebugClientCompleted / DebugServerCompleted
+//   onError(E)    → DebugClientError / DebugServerError
 // ═══════════════════════════════════════════════════════════════════
 
-// Client → Server: subscribe and control debug output at runtime.
-message DebugControl {
+// ── Client → Server (debug) ─────────────────────────────────────
+
+message DebugClientMessage {
+  oneof kind {
+    DebugClientNext      next      = 1;
+    DebugClientCompleted completed = 2;
+    DebugClientError     error     = 3;
+  }
+}
+
+message DebugClientNext {
   // The session to observe.  Must match a currently open Session stream.
   // If empty, subscribes to server-wide debug output.
   string session_id = 1;
 
   oneof control {
-    DebugSubscribe   subscribe    = 10;
-    SetLogLevel      set_level    = 11;
-    SetDebugFilter   set_filter   = 12;
-    DebugUnsubscribe unsubscribe  = 13;
+    DebugSubscribe subscribe  = 10;
+    SetLogLevel    set_level  = 11;
+    SetDebugFilter set_filter = 12;
   }
 }
 
-// Initial subscription request — opens the debug stream for a session.
-message DebugSubscribe {
-  LogLevel min_level = 1;  // minimum severity to receive (default: INFO)
+// Dispose the debug subscription (replaces DebugUnsubscribe).
+message DebugClientCompleted {
+  string session_id = 1;
 }
 
-// Change the minimum log level at runtime.
-message SetLogLevel {
-  LogLevel level = 1;
+message DebugClientError {
+  string session_id = 1;
+  string message    = 2;
 }
 
-// Add or replace a category filter at runtime.
-message SetDebugFilter {
-  // Only emit messages matching these categories (empty = all).
-  repeated string include_categories = 1;
-  // Exclude messages matching these categories.
-  repeated string exclude_categories = 2;
+// ── Server → Client (debug) ─────────────────────────────────────
+
+message DebugServerMessage {
+  oneof kind {
+    DebugServerNext      next      = 1;
+    DebugServerCompleted completed = 2;
+    DebugServerError     error     = 3;
+  }
 }
 
-// Gracefully close the debug channel for this session.
-message DebugUnsubscribe {}
-
-// Server → Client: a single debug/log event.
-message DebugMessage {
+message DebugServerNext {
   // The session this message belongs to (or empty for server-wide).
   string session_id = 1;
 
@@ -195,6 +266,32 @@ message DebugMessage {
 
   // Optional structured key-value context (e.g. request_id, address).
   map<string, string> metadata = 6;
+}
+
+message DebugServerCompleted {
+  string session_id = 1;
+}
+
+message DebugServerError {
+  string session_id = 1;
+  string message    = 2;
+}
+
+// ── Debug control payloads ──────────────────────────────────────
+
+message DebugSubscribe {
+  LogLevel min_level = 1;  // minimum severity to receive (default: INFO)
+}
+
+message SetLogLevel {
+  LogLevel level = 1;
+}
+
+message SetDebugFilter {
+  // Only emit messages matching these categories (empty = all).
+  repeated string include_categories = 1;
+  // Exclude messages matching these categories.
+  repeated string exclude_categories = 2;
 }
 
 enum LogLevel {
@@ -217,8 +314,8 @@ message ConnectRequest {
 }
 
 message ConnectResponse {
-  bool   ok         = 1;
-  string session_id = 2;  // server-assigned, used to correlate DebugChannel
+  // server-assigned, used to correlate DebugChannel
+  string session_id = 1;
 }
 
 message DisconnectRequest {}
@@ -231,11 +328,11 @@ message DisconnectResponse {}
 // ═══════════════════════════════════════════════════════════════════
 
 message DeviceTarget {
-  // At most one should be set.  When none is set and a single device
-  // is found on the network, it is auto-selected (same as CLI).
-  string mac_address  = 1;  // e.g. "28:80:ca:ea:41:f3"
-  string device_name  = 2;  // e.g. "Hero 1"
-  string ip_address   = 3;  // e.g. "192.168.178.69"
+  oneof kind {
+    string mac_address  = 1;  // e.g. "28:80:ca:ea:41:f3"
+    string device_name  = 2;  // e.g. "Hero 1"
+    string ip_address   = 3;  // e.g. "192.168.178.69"
+  }
 
   // How long to wait for the device to reappear after a config change
   // (maps to --wait-timeout, default 30000 ms).
@@ -342,7 +439,7 @@ message DigitalInputsState {
 
 // --iterate-relais-switches
 // Server streams RelayEvent messages until the client sends
-// CancelRequest with the matching request_id.
+// ClientCompleted with the matching request_id.
 message IterateRelaySwitchesRequest {}
 
 message RelayEvent {
@@ -352,7 +449,6 @@ message RelayEvent {
     COIL_OFF       = 2;
     CYCLE_COMPLETE = 3;
     SAFE_SHUTDOWN  = 4;
-    INTERRUPTED    = 5;
   }
   EventType type    = 1;
   uint32    coil_nr = 2;  // 1-8, meaningful for COIL_ON / COIL_OFF
@@ -437,20 +533,16 @@ message DeviceReappeared {
 // ═══════════════════════════════════════════════════════════════════
 
 message WriteResult {
-  bool   success     = 1;
-  string description = 2;
+  string description = 1;
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Flow control
+// Cancellation acknowledgement
 // ═══════════════════════════════════════════════════════════════════
 
-// Cancel an in-flight streaming command.
-message CancelRequest {
-  // The request_id of the command to cancel.
-  string target_request_id = 1;
-}
-
+// Sent as a ServerNext payload after the server receives
+// ClientCompleted for a streaming request.  Followed by
+// ServerCompleted once the server has finished cleanup.
 message CancelAck {
   string cancelled_request_id = 1;
 }
