@@ -357,6 +357,10 @@ message DeviceTarget {
   // How long to wait for the device to reappear after a config change
   // (maps to --wait-timeout, default 30000 ms).
   uint32 wait_timeout_ms = 10;
+
+  // Additional /24 subnets to sweep with unicast probes
+  // (e.g. ["192.168.1.0"] for a directly attached network).
+  repeated string extra_subnets = 11;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -482,6 +486,10 @@ message RelayEvent {
 message ScanNetworkRequest {
   uint32 scan_timeout_ms = 1;  // default 3000
   string probe_ip        = 2;  // optional: probe a single IP
+
+  // Additional /24 subnets to sweep with unicast probes
+  // (e.g. ["192.168.1.0"] for a directly attached network).
+  repeated string extra_subnets = 3;
 }
 
 message DeviceInfo {
