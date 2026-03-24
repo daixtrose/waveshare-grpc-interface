@@ -278,6 +278,26 @@ message DebugServerError {
 }
 
 // ── Debug control payloads ──────────────────────────────────────
+//
+// The client doesn't start receiving debug output just by opening the
+// DebugChannel stream.  Opening the stream only sets up the gRPC bidi
+// connection — no log messages flow until the client explicitly opts in.
+//
+// Typical lifecycle:
+//   1. Client opens DebugChannel bidi stream.
+//   2. Client sends DebugSubscribe (inside a DebugClientNext) to start
+//      receiving log messages at or above the specified min_level.
+//   3. At any time the client can adjust filtering:
+//      - SetLogLevel   → change the minimum severity threshold
+//      - SetDebugFilter → include/exclude specific categories
+//   4. Client sends DebugClientCompleted to unsubscribe and stop
+//      receiving debug output, without closing the gRPC stream.
+//   5. The client may re-subscribe later on the same stream by
+//      sending a new DebugSubscribe message.
+//
+// This opt-in design gives the client full runtime control over debug
+// output without reconnecting, and avoids flooding an unprepared client
+// with log messages it hasn't asked for.
 
 message DebugSubscribe {
   LogLevel min_level = 1;  // minimum severity to receive (default: INFO)
