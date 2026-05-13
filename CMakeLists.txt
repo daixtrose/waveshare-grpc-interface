@@ -12,6 +12,43 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
 
+# ── Cross-compile fix-up (Trixie aarch64 sysroot) ───────────────
+# libgrpc++-dev in the Trixie sysroot ships the libs but NOT the
+# host-side codegen tools that gRPCConfig.cmake's imported targets
+# expect at /opt/trixie-arm64-sysroot/usr/bin/{grpc_cpp_plugin,protoc}.
+# Symlink them in from the host's apt-installed binaries, then
+# override IMPORTED_LOCATION after find_package so add_custom_command's
+# protoc invocation runs the host x86_64 binary directly.
+if(CMAKE_CROSSCOMPILING AND DEFINED CMAKE_SYSROOT
+    AND EXISTS "${CMAKE_SYSROOT}/usr/lib/aarch64-linux-gnu")
+    foreach(_tool protoc grpc_cpp_plugin)
+        find_program(_host_${_tool} ${_tool}
+            PATHS /usr/bin /usr/local/bin
+            NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
+        if(_host_${_tool})
+            set(_sysroot_${_tool} "${CMAKE_SYSROOT}/usr/bin/${_tool}")
+            if(NOT EXISTS "${_sysroot_${_tool}}")
+                file(CREATE_LINK "${_host_${_tool}}"
+                                 "${_sysroot_${_tool}}" SYMBOLIC)
+                message(STATUS "Cross-compile: symlinked ${_sysroot_${_tool}} → ${_host_${_tool}}")
+            endif()
+        else()
+            message(WARNING "Cross-compile: host ${_tool} not found in /usr/bin")
+        endif()
+    endforeach()
+
+    # Touch placeholders for unused gRPC plugins that gRPCTargets.cmake
+    # validates the existence of (php/csharp/etc. — we only need C++).
+    foreach(_unused_plugin grpc_csharp_plugin grpc_node_plugin
+            grpc_objective_c_plugin grpc_php_plugin grpc_python_plugin
+            grpc_ruby_plugin)
+        set(_path "${CMAKE_SYSROOT}/usr/bin/${_unused_plugin}")
+        if(NOT EXISTS "${_path}")
+            file(TOUCH "${_path}")
+        endif()
+    endforeach()
+endif()
+
 # ── Find or fetch gRPC (brings protobuf + absl transitively) ────
 find_package(gRPC CONFIG QUIET)
 if(NOT gRPC_FOUND)
@@ -34,6 +71,20 @@ if(NOT gRPC_FOUND)
     # When built from source, the plugin targets have different names
     if(NOT TARGET gRPC::grpc_cpp_plugin)
         add_executable(gRPC::grpc_cpp_plugin ALIAS grpc_cpp_plugin)
+    endif()
+endif()
+
+# ── Cross-compile: redirect imported codegen targets to host binaries ──
+if(CMAKE_CROSSCOMPILING)
+    if(TARGET protobuf::protoc AND DEFINED _host_protoc)
+        set_property(TARGET protobuf::protoc
+                     PROPERTY IMPORTED_LOCATION "${_host_protoc}")
+        message(STATUS "Cross-compile: protobuf::protoc → ${_host_protoc}")
+    endif()
+    if(TARGET gRPC::grpc_cpp_plugin AND DEFINED _host_grpc_cpp_plugin)
+        set_property(TARGET gRPC::grpc_cpp_plugin
+                     PROPERTY IMPORTED_LOCATION "${_host_grpc_cpp_plugin}")
+        message(STATUS "Cross-compile: gRPC::grpc_cpp_plugin → ${_host_grpc_cpp_plugin}")
     endif()
 endif()
 
